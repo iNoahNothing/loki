@@ -3,6 +3,7 @@ package frontend
 import (
 	"encoding/json"
 	"net/http"
+	"text/template"
 
 	"github.com/go-kit/log/level"
 	"github.com/grafana/dskit/user"
@@ -19,6 +20,46 @@ type httpExceedsLimitsRequest struct {
 type httpExceedsLimitsResponse struct {
 	RejectedStreams []*logproto.RejectedStream `json:"rejectedStreams,omitempty"`
 }
+
+const ringStreamUsageTemplate = `
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Ring Stream Usage Cache</title>
+    <style>
+        table { border-collapse: collapse; width: 100%; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background-color: #f2f2f2; }
+        form { display: inline; }
+        button { padding: 5px 10px; margin: 2px; }
+    </style>
+</head>
+<body>
+    <h1>Ring Stream Usage Cache</h1>
+    <form method="POST">
+        <button type="submit">Clear All Cache</button>
+    </form>
+    <table>
+        <tr>
+            <th>Instance Address</th>
+            <th>Partitions</th>
+            <th>Actions</th>
+        </tr>
+        {{range $addr, $entry := .Entries}}
+        <tr>
+            <td>{{$addr}}</td>
+            <td>{{range $i, $p := $entry.Partitions}}{{if $i}}, {{end}}{{$p}}{{end}}</td>
+            <td>
+                <form method="POST">
+                    <input type="hidden" name="instance" value="{{$addr}}">
+                    <button type="submit">Clear Cache</button>
+                </form>
+            </td>
+        </tr>
+        {{end}}
+    </table>
+</body>
+</html>`
 
 // ServeHTTP implements http.Handler.
 func (f *Frontend) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -60,4 +101,61 @@ func (f *Frontend) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	util.WriteJSONResponse(w, httpExceedsLimitsResponse{
 		RejectedStreams: resp.RejectedStreams,
 	})
+}
+
+func (s *RingStreamUsageGatherer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		// For GET requests, display the HTML page
+		cache, ok := s.cache.(*partitionConsumersCache)
+		if !ok {
+			http.Error(w, "Cache not available", http.StatusInternalServerError)
+			return
+		}
+
+		cache.RLock()
+		data := struct {
+			Entries map[string]*partitionConsumersCacheEntry
+		}{
+			Entries: cache.entries,
+		}
+		cache.RUnlock()
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		tmpl := template.Must(template.New("cache").Parse(ringStreamUsageTemplate))
+		if err := tmpl.Execute(w, data); err != nil {
+			http.Error(w, "Failed to render template", http.StatusInternalServerError)
+			return
+		}
+
+	case http.MethodPost:
+		// For POST requests, handle cache clearing
+		cache, ok := s.cache.(*partitionConsumersCache)
+		if !ok {
+			http.Error(w, "Cache not available", http.StatusInternalServerError)
+			return
+		}
+
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "Failed to parse form", http.StatusBadRequest)
+			return
+		}
+
+		instance := r.FormValue("instance")
+		cache.Lock()
+		if instance == "" {
+			// Clear all cache
+			cache.entries = make(map[string]*partitionConsumersCacheEntry)
+		} else {
+			// Clear specific instance
+			delete(cache.entries, instance)
+		}
+		cache.Unlock()
+
+		// Redirect back to the GET page
+		http.Redirect(w, r, r.URL.Path, http.StatusSeeOther)
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
 }
