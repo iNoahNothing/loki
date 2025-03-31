@@ -169,7 +169,8 @@ func TestRingStreamUsageGatherer_GetStreamUsage(t *testing.T) {
 
 			// Set up the mocked ring and client pool for the tests.
 			readRing, clientPool := newMockRingWithClientPool(t, "test", clients, instances)
-			g := NewRingStreamUsageGatherer(readRing, clientPool, log.NewNopLogger(), numPartitions)
+			// Disable caching for these tests
+			g := NewRingStreamUsageGatherer(readRing, clientPool, log.NewNopLogger(), nil, numPartitions)
 
 			// Set a maximum upper bound on the test execution time.
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -178,6 +179,92 @@ func TestRingStreamUsageGatherer_GetStreamUsage(t *testing.T) {
 			resps, err := g.GetStreamUsage(ctx, test.getStreamUsageRequest)
 			require.NoError(t, err)
 			require.Equal(t, test.expectedResponses, resps)
+		})
+	}
+}
+
+func TestRingStreamUsageGatherer_CacheDisabled(t *testing.T) {
+	const numPartitions = 2
+
+	// Set up test case with one instance
+	now := time.Now()
+	clients := []logproto.IngestLimitsClient{
+		&mockIngestLimitsClient{
+			expectedAssignedPartitionsRequest: &logproto.GetAssignedPartitionsRequest{},
+			getAssignedPartitionsResponse: &logproto.GetAssignedPartitionsResponse{
+				AssignedPartitions: map[int32]int64{
+					1: now.UnixNano(),
+				},
+			},
+			expectedStreamUsageRequest: &logproto.GetStreamUsageRequest{
+				Tenant:       "test",
+				StreamHashes: []uint64{1},
+				Partitions:   []int32{1},
+			},
+			getStreamUsageResponse: &logproto.GetStreamUsageResponse{
+				Tenant:        "test",
+				ActiveStreams: 1,
+				Rate:          10,
+			},
+			t: t,
+		},
+	}
+	instances := []ring.InstanceDesc{
+		{Addr: "instance-0"},
+	}
+
+	testCases := []struct {
+		name                   string
+		ttl                    time.Duration
+		expectedCacheGetCalled int
+		expectedCacheSetCalled int
+	}{
+		{
+			name: "cache disabled with zero TTL",
+			ttl:  0,
+		},
+		{
+			name: "cache disabled with negative TTL",
+			ttl:  -1 * time.Second,
+		},
+		{
+			name:                   "cache enabled with positive TTL",
+			ttl:                    time.Minute,
+			expectedCacheGetCalled: 2,
+			expectedCacheSetCalled: 1,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			readRing, clientPool := newMockRingWithClientPool(t, "test", clients, instances)
+			cache := newMockPartitionConsumersCache()
+			g := NewRingStreamUsageGatherer(readRing, clientPool, log.NewNopLogger(), cache, numPartitions)
+
+			ctx := context.Background()
+			req := GetStreamUsageRequest{
+				Tenant:       "test",
+				StreamHashes: []uint64{1},
+			}
+
+			// First call
+			resp1, err := g.GetStreamUsage(ctx, req)
+			require.NoError(t, err)
+			require.Len(t, resp1, 1)
+			require.Equal(t, "instance-0", resp1[0].Addr)
+
+			// Second immediate call
+			resp2, err := g.GetStreamUsage(ctx, req)
+			require.NoError(t, err)
+			require.Len(t, resp2, 1)
+			require.Equal(t, "instance-0", resp2[0].Addr)
+
+			// For enabled cache, responses should be identical
+			if tc.ttl > 0 {
+				require.Equal(t, cache.getCalled, tc.expectedCacheGetCalled)
+				require.Equal(t, cache.setCalled, tc.expectedCacheSetCalled)
+				require.Equal(t, resp1, resp2, "with enabled cache, responses should be identical")
+			}
 		})
 	}
 }

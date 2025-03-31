@@ -16,6 +16,32 @@ import (
 	"github.com/grafana/loki/v3/pkg/logproto"
 )
 
+type mockPartitionConsumersCache struct {
+	cache     map[string]partitionConsumersCacheEntry
+	getCalled int
+	setCalled int
+}
+
+func newMockPartitionConsumersCache() *mockPartitionConsumersCache {
+	return &mockPartitionConsumersCache{
+		cache: make(map[string]partitionConsumersCacheEntry),
+	}
+}
+
+func (c *mockPartitionConsumersCache) get(addr string) (*partitionConsumersCacheEntry, bool) {
+	c.getCalled++
+	entry, ok := c.cache[addr]
+	return &entry, ok
+}
+
+func (c *mockPartitionConsumersCache) set(addr string, partitions []int32, assignedAt map[int32]int64) {
+	c.setCalled++
+	c.cache[addr] = partitionConsumersCacheEntry{
+		partitions: partitions,
+		assignedAt: assignedAt,
+	}
+}
+
 // mockStreamUsageGatherer mocks a StreamUsageGatherer. It avoids having to
 // set up a mock ring to test the frontend.
 type mockStreamUsageGatherer struct {

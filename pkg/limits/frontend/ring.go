@@ -3,6 +3,8 @@ package frontend
 import (
 	"context"
 	"slices"
+	"sync"
+	"time"
 
 	"github.com/go-kit/log"
 	"github.com/grafana/dskit/ring"
@@ -21,6 +23,100 @@ var (
 	LimitsRead = ring.NewOp([]ring.InstanceState{ring.ACTIVE}, nil)
 )
 
+// partitionConsumersCachable is a cache of partition consumers for a given instance.
+// It is used to avoid querying the same instance multiple times for the same
+// partition IDs.
+type partitionConsumersCachable interface {
+	get(addr string) (*partitionConsumersCacheEntry, bool)
+	set(addr string, partitions []int32, assignedAt map[int32]int64)
+}
+
+// partitionConsumersCache is a cache of partition consumers for a given instance.
+// It is used to avoid querying the same instance multiple times for the same
+// partition IDs.
+type partitionConsumersCache struct {
+	sync.RWMutex
+	entries map[string]*partitionConsumersCacheEntry
+	ttl     time.Duration
+}
+
+type partitionConsumersCacheEntry struct {
+	partitions []int32
+	assignedAt map[int32]int64 // timestamp when each partition was assigned
+	expiration time.Time
+}
+
+func newPartitionConsumersCache(ttl time.Duration) partitionConsumersCachable {
+	// If TTL is zero or negative, return a no-op cache
+	if ttl <= 0 {
+		return &partitionConsumersCache{
+			ttl: ttl,
+		}
+	}
+
+	cache := &partitionConsumersCache{
+		entries: make(map[string]*partitionConsumersCacheEntry),
+		ttl:     ttl,
+	}
+
+	// Start cleanup goroutine
+	go cache.cleanup(ttl)
+	return cache
+}
+
+func (c *partitionConsumersCache) cleanup(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		c.Lock()
+		now := time.Now()
+		for key, entry := range c.entries {
+			if now.After(entry.expiration) {
+				delete(c.entries, key)
+			}
+		}
+		c.Unlock()
+	}
+}
+
+func (c *partitionConsumersCache) get(addr string) (*partitionConsumersCacheEntry, bool) {
+	// If TTL is zero or negative, cache is disabled
+	if c.ttl <= 0 {
+		return nil, false
+	}
+
+	c.RLock()
+	defer c.RUnlock()
+
+	entry, exists := c.entries[addr]
+	if !exists {
+		return nil, false
+	}
+
+	if time.Now().After(entry.expiration) {
+		return nil, false
+	}
+
+	return entry, true
+}
+
+func (c *partitionConsumersCache) set(addr string, partitions []int32, assignedAt map[int32]int64) {
+	// If TTL is zero or negative, cache is disabled
+	if c.ttl <= 0 {
+		return
+	}
+
+	c.Lock()
+	defer c.Unlock()
+
+	c.entries[addr] = &partitionConsumersCacheEntry{
+		partitions: partitions,
+		assignedAt: assignedAt,
+		expiration: time.Now().Add(c.ttl),
+	}
+}
+
 // RingStreamUsageGatherer implements StreamUsageGatherer. It uses a ring to find
 // limits instances.
 type RingStreamUsageGatherer struct {
@@ -28,15 +124,17 @@ type RingStreamUsageGatherer struct {
 	ring          ring.ReadRing
 	pool          *ring_client.Pool
 	numPartitions int
+	cache         partitionConsumersCachable
 }
 
 // NewRingStreamUsageGatherer returns a new RingStreamUsageGatherer.
-func NewRingStreamUsageGatherer(ring ring.ReadRing, pool *ring_client.Pool, logger log.Logger, numPartitions int) *RingStreamUsageGatherer {
+func NewRingStreamUsageGatherer(ring ring.ReadRing, pool *ring_client.Pool, logger log.Logger, cache partitionConsumersCachable, numPartitions int) *RingStreamUsageGatherer {
 	return &RingStreamUsageGatherer{
 		logger:        logger,
 		ring:          ring,
 		pool:          pool,
 		numPartitions: numPartitions,
+		cache:         cache,
 	}
 }
 
@@ -123,53 +221,81 @@ type getAssignedPartitionsResponse struct {
 }
 
 func (g *RingStreamUsageGatherer) getPartitionConsumers(ctx context.Context, rs ring.ReplicationSet) (map[string][]int32, error) {
-	errg, ctx := errgroup.WithContext(ctx)
-	responses := make([]getAssignedPartitionsResponse, len(rs.Instances))
-
-	// Get the partitions assigned to each instance.
-	for i, instance := range rs.Instances {
-		errg.Go(func() error {
-			client, err := g.pool.GetClientFor(instance.Addr)
-			if err != nil {
-				return err
-			}
-			resp, err := client.(logproto.IngestLimitsClient).GetAssignedPartitions(ctx, &logproto.GetAssignedPartitionsRequest{})
-			if err != nil {
-				return err
-			}
-			// No need for a mutex here as responses is a "Structured variable"
-			// as described in https://go.dev/ref/spec#Variables.
-			responses[i] = getAssignedPartitionsResponse{Addr: instance.Addr, Response: resp}
-			return nil
-		})
-	}
-	if err := errg.Wait(); err != nil {
-		return nil, err
-	}
-
-	// Deduplicate the partitions. This can happen if the call to
-	// GetAssignedPartitions is interleaved with a partition rebalance, such
-	// that two or more instances claim to be the consumer of the same
-	// partition at the same time. In case of conflicts, choose the instance
-	// with the latest timestamp.
+	// Initialize result maps
+	result := make(map[string][]int32)
 	highestTimestamp := make(map[int32]int64)
 	assigned := make(map[int32]string)
-	for _, resp := range responses {
-		for partition, assignedAt := range resp.Response.AssignedPartitions {
-			if t := highestTimestamp[partition]; t < assignedAt {
-				highestTimestamp[partition] = assignedAt
-				assigned[partition] = resp.Addr
+
+	// Track which instances need to be queried
+	toQuery := make([]ring.InstanceDesc, 0, len(rs.Instances))
+
+	// Try to get cached entries first
+	for _, instance := range rs.Instances {
+		if g.cache == nil {
+			toQuery = append(toQuery, instance)
+			continue
+		}
+
+		if cached, ok := g.cache.get(instance.Addr); ok {
+			// Use cached partitions, but still participate in conflict resolution
+			for _, partition := range cached.partitions {
+				if t := highestTimestamp[partition]; t < cached.assignedAt[partition] {
+					highestTimestamp[partition] = cached.assignedAt[partition]
+					assigned[partition] = instance.Addr
+				}
+			}
+		} else {
+			toQuery = append(toQuery, instance)
+		}
+	}
+
+	// Query uncached instances
+	if len(toQuery) > 0 {
+		errg, ctx := errgroup.WithContext(ctx)
+		responses := make([]getAssignedPartitionsResponse, len(toQuery))
+
+		for i, instance := range toQuery {
+			i, instance := i, instance // capture loop variables
+			errg.Go(func() error {
+				client, err := g.pool.GetClientFor(instance.Addr)
+				if err != nil {
+					return err
+				}
+				resp, err := client.(logproto.IngestLimitsClient).GetAssignedPartitions(ctx, &logproto.GetAssignedPartitionsRequest{})
+				if err != nil {
+					return err
+				}
+				responses[i] = getAssignedPartitionsResponse{Addr: instance.Addr, Response: resp}
+				return nil
+			})
+		}
+		if err := errg.Wait(); err != nil {
+			return nil, err
+		}
+
+		// Process and cache new responses
+		for _, resp := range responses {
+			instancePartitions := make([]int32, 0, len(resp.Response.AssignedPartitions))
+			for partition, assignedAt := range resp.Response.AssignedPartitions {
+				instancePartitions = append(instancePartitions, partition)
+				if t := highestTimestamp[partition]; t < assignedAt {
+					highestTimestamp[partition] = assignedAt
+					assigned[partition] = resp.Addr
+				}
+			}
+			// Cache the instance's partitions
+			if g.cache != nil {
+				g.cache.set(resp.Addr, instancePartitions, resp.Response.AssignedPartitions)
 			}
 		}
 	}
 
-	// Return a slice of partition IDs for each instance.
-	result := make(map[string][]int32)
+	// Build final result based on conflict resolution
 	for partition, addr := range assigned {
 		result[addr] = append(result[addr], partition)
 	}
 
-	// Sort the partition IDs.
+	// Sort the partition IDs
 	for instance := range result {
 		slices.Sort(result[instance])
 	}
