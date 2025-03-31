@@ -2,6 +2,7 @@ package frontend
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"text/template"
 
@@ -10,16 +11,8 @@ import (
 
 	"github.com/grafana/loki/v3/pkg/logproto"
 	"github.com/grafana/loki/v3/pkg/util"
+	util_log "github.com/grafana/loki/v3/pkg/util/log"
 )
-
-type httpExceedsLimitsRequest struct {
-	TenantID     string   `json:"tenantID"`
-	StreamHashes []uint64 `json:"streamHashes"`
-}
-
-type httpExceedsLimitsResponse struct {
-	RejectedStreams []*logproto.RejectedStream `json:"rejectedStreams,omitempty"`
-}
 
 const ringStreamUsageTemplate = `
 <!DOCTYPE html>
@@ -45,10 +38,10 @@ const ringStreamUsageTemplate = `
             <th>Partitions</th>
             <th>Actions</th>
         </tr>
-        {{range $addr, $entry := .Entries}}
+        {{range $addr, $partitions := .Entries}}
         <tr>
             <td>{{$addr}}</td>
-            <td>{{range $i, $p := $entry.Partitions}}{{if $i}}, {{end}}{{$p}}{{end}}</td>
+            <td>{{range $i, $p := $partitions}}{{if $i}}, {{end}}{{$p}}{{end}}</td>
             <td>
                 <form method="POST">
                     <input type="hidden" name="instance" value="{{$addr}}">
@@ -60,6 +53,15 @@ const ringStreamUsageTemplate = `
     </table>
 </body>
 </html>`
+
+type httpExceedsLimitsRequest struct {
+	TenantID     string   `json:"tenantID"`
+	StreamHashes []uint64 `json:"streamHashes"`
+}
+
+type httpExceedsLimitsResponse struct {
+	RejectedStreams []*logproto.RejectedStream `json:"rejectedStreams,omitempty"`
+}
 
 // ServeHTTP implements http.Handler.
 func (f *Frontend) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -107,19 +109,26 @@ func (s *RingStreamUsageGatherer) ServeHTTP(w http.ResponseWriter, r *http.Reque
 	switch r.Method {
 	case http.MethodGet:
 		// For GET requests, display the HTML page
-		cache, ok := s.cache.(*partitionConsumersCache)
+		cache, ok := s.cache.(*PartitionConsumersCache)
 		if !ok {
 			http.Error(w, "Cache not available", http.StatusInternalServerError)
 			return
 		}
 
 		cache.RLock()
+		defer cache.RUnlock()
+
 		data := struct {
-			Entries map[string]*partitionConsumersCacheEntry
+			Entries map[string][]int32
 		}{
-			Entries: cache.entries,
+			Entries: make(map[string][]int32),
 		}
-		cache.RUnlock()
+
+		for addr, entry := range cache.entries {
+			data.Entries[addr] = entry.partitions
+		}
+
+		level.Info(util_log.Logger).Log("msg", "ring stream usage", "entries", fmt.Sprintf("%+v", data))
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		tmpl := template.Must(template.New("cache").Parse(ringStreamUsageTemplate))
@@ -130,7 +139,7 @@ func (s *RingStreamUsageGatherer) ServeHTTP(w http.ResponseWriter, r *http.Reque
 
 	case http.MethodPost:
 		// For POST requests, handle cache clearing
-		cache, ok := s.cache.(*partitionConsumersCache)
+		cache, ok := s.cache.(*PartitionConsumersCache)
 		if !ok {
 			http.Error(w, "Cache not available", http.StatusInternalServerError)
 			return
@@ -141,16 +150,17 @@ func (s *RingStreamUsageGatherer) ServeHTTP(w http.ResponseWriter, r *http.Reque
 			return
 		}
 
-		instance := r.FormValue("instance")
 		cache.Lock()
+		defer cache.Unlock()
+
+		instance := r.FormValue("instance")
 		if instance == "" {
 			// Clear all cache
-			cache.entries = make(map[string]*partitionConsumersCacheEntry)
+			cache.DeleteAll()
 		} else {
 			// Clear specific instance
-			delete(cache.entries, instance)
+			cache.Delete(instance)
 		}
-		cache.Unlock()
 
 		// Redirect back to the GET page
 		http.Redirect(w, r, r.URL.Path, http.StatusSeeOther)

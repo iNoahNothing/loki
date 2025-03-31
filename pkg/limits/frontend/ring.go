@@ -3,8 +3,6 @@ package frontend
 import (
 	"context"
 	"slices"
-	"sync"
-	"time"
 
 	"github.com/go-kit/log"
 	"github.com/grafana/dskit/ring"
@@ -23,100 +21,6 @@ var (
 	LimitsRead = ring.NewOp([]ring.InstanceState{ring.ACTIVE}, nil)
 )
 
-// partitionConsumersCachable is a cache of partition consumers for a given instance.
-// It is used to avoid querying the same instance multiple times for the same
-// partition IDs.
-type partitionConsumersCachable interface {
-	get(addr string) (*partitionConsumersCacheEntry, bool)
-	set(addr string, partitions []int32, assignedAt map[int32]int64)
-}
-
-// partitionConsumersCache is a cache of partition consumers for a given instance.
-// It is used to avoid querying the same instance multiple times for the same
-// partition IDs.
-type partitionConsumersCache struct {
-	sync.RWMutex
-	entries map[string]*partitionConsumersCacheEntry
-	ttl     time.Duration
-}
-
-type partitionConsumersCacheEntry struct {
-	partitions []int32
-	assignedAt map[int32]int64 // timestamp when each partition was assigned
-	expiration time.Time
-}
-
-func newPartitionConsumersCache(ttl time.Duration) partitionConsumersCachable {
-	// If TTL is zero or negative, return a no-op cache
-	if ttl <= 0 {
-		return &partitionConsumersCache{
-			ttl: ttl,
-		}
-	}
-
-	cache := &partitionConsumersCache{
-		entries: make(map[string]*partitionConsumersCacheEntry),
-		ttl:     ttl,
-	}
-
-	// Start cleanup goroutine
-	go cache.cleanup(ttl)
-	return cache
-}
-
-func (c *partitionConsumersCache) cleanup(interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		c.Lock()
-		now := time.Now()
-		for key, entry := range c.entries {
-			if now.After(entry.expiration) {
-				delete(c.entries, key)
-			}
-		}
-		c.Unlock()
-	}
-}
-
-func (c *partitionConsumersCache) get(addr string) (*partitionConsumersCacheEntry, bool) {
-	// If TTL is zero or negative, cache is disabled
-	if c.ttl <= 0 {
-		return nil, false
-	}
-
-	c.RLock()
-	defer c.RUnlock()
-
-	entry, exists := c.entries[addr]
-	if !exists {
-		return nil, false
-	}
-
-	if time.Now().After(entry.expiration) {
-		return nil, false
-	}
-
-	return entry, true
-}
-
-func (c *partitionConsumersCache) set(addr string, partitions []int32, assignedAt map[int32]int64) {
-	// If TTL is zero or negative, cache is disabled
-	if c.ttl <= 0 {
-		return
-	}
-
-	c.Lock()
-	defer c.Unlock()
-
-	c.entries[addr] = &partitionConsumersCacheEntry{
-		partitions: partitions,
-		assignedAt: assignedAt,
-		expiration: time.Now().Add(c.ttl),
-	}
-}
-
 // RingStreamUsageGatherer implements StreamUsageGatherer. It uses a ring to find
 // limits instances.
 type RingStreamUsageGatherer struct {
@@ -124,11 +28,11 @@ type RingStreamUsageGatherer struct {
 	ring          ring.ReadRing
 	pool          *ring_client.Pool
 	numPartitions int
-	cache         partitionConsumersCachable
+	cache         PartitionConsumersCachable
 }
 
 // NewRingStreamUsageGatherer returns a new RingStreamUsageGatherer.
-func NewRingStreamUsageGatherer(ring ring.ReadRing, pool *ring_client.Pool, logger log.Logger, cache partitionConsumersCachable, numPartitions int) *RingStreamUsageGatherer {
+func NewRingStreamUsageGatherer(ring ring.ReadRing, pool *ring_client.Pool, logger log.Logger, cache PartitionConsumersCachable, numPartitions int) *RingStreamUsageGatherer {
 	return &RingStreamUsageGatherer{
 		logger:        logger,
 		ring:          ring,
@@ -236,7 +140,7 @@ func (g *RingStreamUsageGatherer) getPartitionConsumers(ctx context.Context, rs 
 			continue
 		}
 
-		if cached, ok := g.cache.get(instance.Addr); ok {
+		if cached, ok := g.cache.Get(instance.Addr); ok {
 			// Use cached partitions, but still participate in conflict resolution
 			for _, partition := range cached.partitions {
 				if t := highestTimestamp[partition]; t < cached.assignedAt[partition] {
@@ -255,7 +159,6 @@ func (g *RingStreamUsageGatherer) getPartitionConsumers(ctx context.Context, rs 
 		responses := make([]getAssignedPartitionsResponse, len(toQuery))
 
 		for i, instance := range toQuery {
-			i, instance := i, instance // capture loop variables
 			errg.Go(func() error {
 				client, err := g.pool.GetClientFor(instance.Addr)
 				if err != nil {
@@ -285,7 +188,7 @@ func (g *RingStreamUsageGatherer) getPartitionConsumers(ctx context.Context, rs 
 			}
 			// Cache the instance's partitions
 			if g.cache != nil {
-				g.cache.set(resp.Addr, instancePartitions, resp.Response.AssignedPartitions)
+				g.cache.Set(resp.Addr, instancePartitions, resp.Response.AssignedPartitions)
 			}
 		}
 	}

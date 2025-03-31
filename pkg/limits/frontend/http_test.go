@@ -113,22 +113,22 @@ func TestRingStreamUsageGatherer_ServeHTTP(t *testing.T) {
 		name           string
 		method         string
 		formData       map[string]string
-		initialCache   map[string]*partitionConsumersCacheEntry
-		expectedCache  map[string]*partitionConsumersCacheEntry
+		initialCache   map[string]*PartitionConsumersCacheEntry
+		expectedCache  map[string]*PartitionConsumersCacheEntry
 		expectedStatus int
 		expectedBody   string
 	}{
 		{
 			name:           "GET with empty cache",
 			method:         http.MethodGet,
-			initialCache:   map[string]*partitionConsumersCacheEntry{},
+			initialCache:   map[string]*PartitionConsumersCacheEntry{},
 			expectedStatus: http.StatusOK,
 			expectedBody:   "Ring Stream Usage Cache",
 		},
 		{
 			name:   "GET with populated cache",
 			method: http.MethodGet,
-			initialCache: map[string]*partitionConsumersCacheEntry{
+			initialCache: map[string]*PartitionConsumersCacheEntry{
 				"instance1:8080": {
 					partitions: []int32{1, 2, 3},
 					assignedAt: map[int32]int64{
@@ -157,7 +157,7 @@ func TestRingStreamUsageGatherer_ServeHTTP(t *testing.T) {
 			formData: map[string]string{
 				"instance": "instance1:8080",
 			},
-			initialCache: map[string]*partitionConsumersCacheEntry{
+			initialCache: map[string]*PartitionConsumersCacheEntry{
 				"instance1:8080": {
 					partitions: []int32{1, 2, 3},
 					assignedAt: map[int32]int64{
@@ -177,7 +177,7 @@ func TestRingStreamUsageGatherer_ServeHTTP(t *testing.T) {
 					expiration: time.Now().Add(time.Hour),
 				},
 			},
-			expectedCache: map[string]*partitionConsumersCacheEntry{
+			expectedCache: map[string]*PartitionConsumersCacheEntry{
 				"instance2:8080": {
 					partitions: []int32{4, 5, 6},
 					assignedAt: map[int32]int64{
@@ -193,7 +193,7 @@ func TestRingStreamUsageGatherer_ServeHTTP(t *testing.T) {
 		{
 			name:   "POST clear all cache",
 			method: http.MethodPost,
-			initialCache: map[string]*partitionConsumersCacheEntry{
+			initialCache: map[string]*PartitionConsumersCacheEntry{
 				"instance1:8080": {
 					partitions: []int32{1, 2, 3},
 					assignedAt: map[int32]int64{
@@ -213,7 +213,7 @@ func TestRingStreamUsageGatherer_ServeHTTP(t *testing.T) {
 					expiration: time.Now().Add(time.Hour),
 				},
 			},
-			expectedCache:  map[string]*partitionConsumersCacheEntry{},
+			expectedCache:  map[string]*PartitionConsumersCacheEntry{},
 			expectedStatus: http.StatusSeeOther,
 		},
 		{
@@ -226,8 +226,8 @@ func TestRingStreamUsageGatherer_ServeHTTP(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Create a new cache with test data
-			cache := &partitionConsumersCache{
-				entries: make(map[string]*partitionConsumersCacheEntry),
+			cache := &PartitionConsumersCache{
+				entries: make(map[string]*PartitionConsumersCacheEntry),
 				ttl:     time.Hour,
 			}
 			for k, v := range tt.initialCache {

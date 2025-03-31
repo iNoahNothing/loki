@@ -17,29 +17,41 @@ import (
 )
 
 type mockPartitionConsumersCache struct {
-	cache     map[string]partitionConsumersCacheEntry
-	getCalled int
-	setCalled int
+	cache           map[string]PartitionConsumersCacheEntry
+	getCalled       int
+	setCalled       int
+	deleteCalled    int
+	deleteAllCalled int
 }
 
 func newMockPartitionConsumersCache() *mockPartitionConsumersCache {
 	return &mockPartitionConsumersCache{
-		cache: make(map[string]partitionConsumersCacheEntry),
+		cache: make(map[string]PartitionConsumersCacheEntry),
 	}
 }
 
-func (c *mockPartitionConsumersCache) get(addr string) (*partitionConsumersCacheEntry, bool) {
+func (c *mockPartitionConsumersCache) Get(addr string) (*PartitionConsumersCacheEntry, bool) {
 	c.getCalled++
 	entry, ok := c.cache[addr]
 	return &entry, ok
 }
 
-func (c *mockPartitionConsumersCache) set(addr string, partitions []int32, assignedAt map[int32]int64) {
+func (c *mockPartitionConsumersCache) Set(addr string, partitions []int32, assignedAt map[int32]int64) {
 	c.setCalled++
-	c.cache[addr] = partitionConsumersCacheEntry{
+	c.cache[addr] = PartitionConsumersCacheEntry{
 		partitions: partitions,
 		assignedAt: assignedAt,
 	}
+}
+
+func (c *mockPartitionConsumersCache) Delete(addr string) {
+	c.deleteCalled++
+	delete(c.cache, addr)
+}
+
+func (c *mockPartitionConsumersCache) DeleteAll() {
+	c.deleteAllCalled++
+	c.cache = make(map[string]PartitionConsumersCacheEntry)
 }
 
 // mockStreamUsageGatherer mocks a StreamUsageGatherer. It avoids having to
@@ -79,7 +91,7 @@ func (m *mockIngestLimitsClient) GetAssignedPartitions(_ context.Context, r *log
 	return m.getAssignedPartitionsResponse, nil
 }
 
-func (m *mockIngestLimitsClient) GetStreamUsage(_ context.Context, r *logproto.GetStreamUsageRequest, _ ...grpc.CallOption) (*logproto.GetStreamUsageResponse, error) {
+func (m *mockIngestLimitsClient) GetStreamUsage(_ context.Context, _ *logproto.GetStreamUsageRequest, _ ...grpc.CallOption) (*logproto.GetStreamUsageResponse, error) {
 	return m.getStreamUsageResponse, nil
 }
 
