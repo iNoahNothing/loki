@@ -17,8 +17,9 @@ import (
 )
 
 type mockPartitionConsumersCache struct {
-	cache           map[string]PartitionConsumersCacheEntry
+	cache           map[string]*PartitionConsumersCacheEntry
 	getCalled       int
+	getAllCalled    int
 	setCalled       int
 	deleteCalled    int
 	deleteAllCalled int
@@ -26,19 +27,24 @@ type mockPartitionConsumersCache struct {
 
 func newMockPartitionConsumersCache() *mockPartitionConsumersCache {
 	return &mockPartitionConsumersCache{
-		cache: make(map[string]PartitionConsumersCacheEntry),
+		cache: make(map[string]*PartitionConsumersCacheEntry),
 	}
 }
 
 func (c *mockPartitionConsumersCache) Get(addr string) (*PartitionConsumersCacheEntry, bool) {
 	c.getCalled++
 	entry, ok := c.cache[addr]
-	return &entry, ok
+	return entry, ok
+}
+
+func (c *mockPartitionConsumersCache) GetAll() map[string]*PartitionConsumersCacheEntry {
+	c.getAllCalled++
+	return c.cache
 }
 
 func (c *mockPartitionConsumersCache) Set(addr string, partitions []int32, assignedAt map[int32]int64) {
 	c.setCalled++
-	c.cache[addr] = PartitionConsumersCacheEntry{
+	c.cache[addr] = &PartitionConsumersCacheEntry{
 		partitions: partitions,
 		assignedAt: assignedAt,
 	}
@@ -51,7 +57,7 @@ func (c *mockPartitionConsumersCache) Delete(addr string) {
 
 func (c *mockPartitionConsumersCache) DeleteAll() {
 	c.deleteAllCalled++
-	c.cache = make(map[string]PartitionConsumersCacheEntry)
+	c.cache = make(map[string]*PartitionConsumersCacheEntry)
 }
 
 // mockStreamUsageGatherer mocks a StreamUsageGatherer. It avoids having to

@@ -109,22 +109,13 @@ func (s *RingStreamUsageGatherer) ServeHTTP(w http.ResponseWriter, r *http.Reque
 	switch r.Method {
 	case http.MethodGet:
 		// For GET requests, display the HTML page
-		cache, ok := s.cache.(*PartitionConsumersCache)
-		if !ok {
-			http.Error(w, "Cache not available", http.StatusInternalServerError)
-			return
-		}
-
-		cache.RLock()
-		defer cache.RUnlock()
-
 		data := struct {
 			Entries map[string][]int32
 		}{
 			Entries: make(map[string][]int32),
 		}
 
-		for addr, entry := range cache.entries {
+		for addr, entry := range s.cache.GetAll() {
 			data.Entries[addr] = entry.partitions
 		}
 
@@ -139,27 +130,18 @@ func (s *RingStreamUsageGatherer) ServeHTTP(w http.ResponseWriter, r *http.Reque
 
 	case http.MethodPost:
 		// For POST requests, handle cache clearing
-		cache, ok := s.cache.(*PartitionConsumersCache)
-		if !ok {
-			http.Error(w, "Cache not available", http.StatusInternalServerError)
-			return
-		}
-
 		if err := r.ParseForm(); err != nil {
 			http.Error(w, "Failed to parse form", http.StatusBadRequest)
 			return
 		}
 
-		cache.Lock()
-		defer cache.Unlock()
-
 		instance := r.FormValue("instance")
 		if instance == "" {
 			// Clear all cache
-			cache.DeleteAll()
+			s.cache.DeleteAll()
 		} else {
 			// Clear specific instance
-			cache.Delete(instance)
+			s.cache.Delete(instance)
 		}
 
 		// Redirect back to the GET page

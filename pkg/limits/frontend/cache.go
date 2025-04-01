@@ -10,6 +10,7 @@ import (
 // partition IDs.
 type PartitionConsumersCachable interface {
 	Get(addr string) (*PartitionConsumersCacheEntry, bool)
+	GetAll() map[string]*PartitionConsumersCacheEntry
 	Set(addr string, partitions []int32, assignedAt map[int32]int64)
 	Delete(addr string)
 	DeleteAll()
@@ -19,7 +20,7 @@ type PartitionConsumersCachable interface {
 // It is used to avoid querying the same instance multiple times for the same
 // partition IDs.
 type PartitionConsumersCache struct {
-	sync.RWMutex
+	mtx     sync.RWMutex
 	entries map[string]*PartitionConsumersCacheEntry
 	ttl     time.Duration
 }
@@ -53,14 +54,14 @@ func (c *PartitionConsumersCache) evict(interval time.Duration) {
 	defer ticker.Stop()
 
 	for range ticker.C {
-		c.Lock()
+		c.mtx.Lock()
 		now := time.Now()
 		for key, entry := range c.entries {
 			if now.After(entry.expiration) {
 				delete(c.entries, key)
 			}
 		}
-		c.Unlock()
+		c.mtx.Unlock()
 	}
 }
 
@@ -70,8 +71,8 @@ func (c *PartitionConsumersCache) Get(addr string) (*PartitionConsumersCacheEntr
 		return nil, false
 	}
 
-	c.RLock()
-	defer c.RUnlock()
+	c.mtx.RLock()
+	defer c.mtx.RUnlock()
 
 	entry, exists := c.entries[addr]
 	if !exists {
@@ -85,14 +86,21 @@ func (c *PartitionConsumersCache) Get(addr string) (*PartitionConsumersCacheEntr
 	return entry, true
 }
 
+func (c *PartitionConsumersCache) GetAll() map[string]*PartitionConsumersCacheEntry {
+	c.mtx.RLock()
+	defer c.mtx.RUnlock()
+
+	return c.entries
+}
+
 func (c *PartitionConsumersCache) Set(addr string, partitions []int32, assignedAt map[int32]int64) {
 	// If TTL is zero or negative, cache is disabled
 	if c.ttl <= 0 {
 		return
 	}
 
-	c.Lock()
-	defer c.Unlock()
+	c.mtx.Lock()
+	defer c.mtx.Unlock()
 
 	c.entries[addr] = &PartitionConsumersCacheEntry{
 		partitions: partitions,
@@ -102,13 +110,13 @@ func (c *PartitionConsumersCache) Set(addr string, partitions []int32, assignedA
 }
 
 func (c *PartitionConsumersCache) Delete(addr string) {
-	c.Lock()
-	defer c.Unlock()
+	c.mtx.Lock()
+	defer c.mtx.Unlock()
 	delete(c.entries, addr)
 }
 
 func (c *PartitionConsumersCache) DeleteAll() {
-	c.Lock()
-	defer c.Unlock()
+	c.mtx.Lock()
+	defer c.mtx.Unlock()
 	c.entries = make(map[string]*PartitionConsumersCacheEntry)
 }
