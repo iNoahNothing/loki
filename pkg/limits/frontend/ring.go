@@ -3,6 +3,7 @@ package frontend
 import (
 	"context"
 	"slices"
+	"time"
 
 	"github.com/go-kit/log"
 	"github.com/grafana/dskit/ring"
@@ -28,17 +29,19 @@ type RingStreamUsageGatherer struct {
 	ring          ring.ReadRing
 	pool          *ring_client.Pool
 	numPartitions int
-	cache         PartitionConsumersCachable
+	cache         PartitionConsumersCache
+	cacheTTL      time.Duration
 }
 
 // NewRingStreamUsageGatherer returns a new RingStreamUsageGatherer.
-func NewRingStreamUsageGatherer(ring ring.ReadRing, pool *ring_client.Pool, logger log.Logger, cache PartitionConsumersCachable, numPartitions int) *RingStreamUsageGatherer {
+func NewRingStreamUsageGatherer(ring ring.ReadRing, pool *ring_client.Pool, logger log.Logger, cache PartitionConsumersCache, cacheTTL time.Duration, numPartitions int) *RingStreamUsageGatherer {
 	return &RingStreamUsageGatherer{
 		logger:        logger,
 		ring:          ring,
 		pool:          pool,
 		numPartitions: numPartitions,
 		cache:         cache,
+		cacheTTL:      cacheTTL,
 	}
 }
 
@@ -140,11 +143,11 @@ func (g *RingStreamUsageGatherer) getPartitionConsumers(ctx context.Context, rs 
 			continue
 		}
 
-		if cached, ok := g.cache.Get(instance.Addr); ok {
+		if cached := g.cache.Get(instance.Addr); cached != nil {
 			// Use cached partitions, but still participate in conflict resolution
-			for _, partition := range cached.partitions {
-				if t := highestTimestamp[partition]; t < cached.assignedAt[partition] {
-					highestTimestamp[partition] = cached.assignedAt[partition]
+			for _, partition := range cached.Value().partitions {
+				if t := highestTimestamp[partition]; t < cached.Value().assignedAt[partition] {
+					highestTimestamp[partition] = cached.Value().assignedAt[partition]
 					assigned[partition] = instance.Addr
 				}
 			}
@@ -188,7 +191,11 @@ func (g *RingStreamUsageGatherer) getPartitionConsumers(ctx context.Context, rs 
 			}
 			// Cache the instance's partitions
 			if g.cache != nil {
-				g.cache.Set(resp.Addr, instancePartitions, resp.Response.AssignedPartitions)
+				//g.cache.Set(resp.Addr, instancePartitions, resp.Response.AssignedPartitions)
+				g.cache.Set(resp.Addr, &PartitionConsumersCacheEntry{
+					partitions: instancePartitions,
+					assignedAt: resp.Response.AssignedPartitions,
+				}, g.cacheTTL)
 			}
 		}
 	}

@@ -103,36 +103,8 @@ func (f *Frontend) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *RingStreamUsageGatherer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-
-	case http.MethodPost:
-		// For POST requests, handle cache clearing
-		if err := r.ParseForm(); err != nil {
-			http.Error(w, "Failed to parse form", http.StatusBadRequest)
-			return
-		}
-
-		instance := r.FormValue("instance")
-		if instance == "" {
-			// Clear all cache
-			s.cache.DeleteAll()
-		} else {
-			// Clear specific instance
-			s.cache.Delete(instance)
-		}
-
-		// Redirect back to the GET page
-		http.Redirect(w, r, r.URL.Path, http.StatusSeeOther)
-
-	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-	}
-}
-
-// PartitionConsumerCacheHandler handles the GET request to display the cache.
-func (f *Frontend) PartitionConsumerCacheHandler(w http.ResponseWriter, r *http.Request) {
+// PartitionConsumersCacheHandler handles the GET request to display the cache.
+func (f *Frontend) PartitionConsumersCacheHandler(w http.ResponseWriter, r *http.Request) {
 	data := struct {
 		Entries map[string][]int32
 	}{
@@ -141,8 +113,8 @@ func (f *Frontend) PartitionConsumerCacheHandler(w http.ResponseWriter, r *http.
 
 	cache := f.streamUsage.(*RingStreamUsageGatherer).cache
 
-	for addr, entry := range cache.GetAll() {
-		data.Entries[addr] = entry.partitions
+	for addr, entry := range cache.Items() {
+		data.Entries[addr] = entry.Value().partitions
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -153,8 +125,8 @@ func (f *Frontend) PartitionConsumerCacheHandler(w http.ResponseWriter, r *http.
 	}
 }
 
-// PartitionConsumerCacheEvictHandler handles the POST request to clear the cache.
-func (f *Frontend) PartitionConsumerCacheEvictHandler(w http.ResponseWriter, r *http.Request) {
+// PartitionConsumersCacheEvictHandler handles the POST request to clear the cache.
+func (f *Frontend) PartitionConsumersCacheEvictHandler(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "Failed to parse form", http.StatusBadRequest)
 		return

@@ -16,50 +16,6 @@ import (
 	"github.com/grafana/loki/v3/pkg/logproto"
 )
 
-type mockPartitionConsumersCache struct {
-	cache           map[string]*PartitionConsumersCacheEntry
-	getCalled       int
-	getAllCalled    int
-	setCalled       int
-	deleteCalled    int
-	deleteAllCalled int
-}
-
-func newMockPartitionConsumersCache() *mockPartitionConsumersCache {
-	return &mockPartitionConsumersCache{
-		cache: make(map[string]*PartitionConsumersCacheEntry),
-	}
-}
-
-func (c *mockPartitionConsumersCache) Get(addr string) (*PartitionConsumersCacheEntry, bool) {
-	c.getCalled++
-	entry, ok := c.cache[addr]
-	return entry, ok
-}
-
-func (c *mockPartitionConsumersCache) GetAll() map[string]*PartitionConsumersCacheEntry {
-	c.getAllCalled++
-	return c.cache
-}
-
-func (c *mockPartitionConsumersCache) Set(addr string, partitions []int32, assignedAt map[int32]int64) {
-	c.setCalled++
-	c.cache[addr] = &PartitionConsumersCacheEntry{
-		partitions: partitions,
-		assignedAt: assignedAt,
-	}
-}
-
-func (c *mockPartitionConsumersCache) Delete(addr string) {
-	c.deleteCalled++
-	delete(c.cache, addr)
-}
-
-func (c *mockPartitionConsumersCache) DeleteAll() {
-	c.deleteAllCalled++
-	c.cache = make(map[string]*PartitionConsumersCacheEntry)
-}
-
 // mockStreamUsageGatherer mocks a StreamUsageGatherer. It avoids having to
 // set up a mock ring to test the frontend.
 type mockStreamUsageGatherer struct {

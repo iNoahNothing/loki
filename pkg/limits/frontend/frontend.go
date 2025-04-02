@@ -89,8 +89,8 @@ func New(cfg Config, ringName string, limitsRing ring.ReadRing, limits Limits, l
 	)
 
 	rateLimiter := limiter.NewRateLimiter(newRateLimitsAdapter(limits), cfg.RecheckPeriod)
-	partitionIDCache := NewPartitionConsumersCache(cfg.PartitionIDCacheTTL)
-	streamUsage := NewRingStreamUsageGatherer(limitsRing, clientPool, logger, partitionIDCache, cfg.NumPartitions)
+	partitionIDCache := NewPartitionConsumerCache(cfg.PartitionIDCacheTTL)
+	streamUsage := NewRingStreamUsageGatherer(limitsRing, clientPool, logger, partitionIDCache, cfg.PartitionIDCacheTTL, cfg.NumPartitions)
 
 	f := &Frontend{
 		cfg:         cfg,

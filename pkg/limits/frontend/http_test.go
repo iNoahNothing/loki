@@ -111,8 +111,6 @@ func TestFrontend_ServeHTTP(t *testing.T) {
 func TestRingStreamUsageGatherer_ServeHTTP(t *testing.T) {
 	tests := []struct {
 		name           string
-		method         string
-		formData       map[string]string
 		initialCache   map[string]*PartitionConsumersCacheEntry
 		expectedCache  map[string]*PartitionConsumersCacheEntry
 		expectedStatus int
@@ -120,14 +118,12 @@ func TestRingStreamUsageGatherer_ServeHTTP(t *testing.T) {
 	}{
 		{
 			name:           "GET with empty cache",
-			method:         http.MethodGet,
 			initialCache:   map[string]*PartitionConsumersCacheEntry{},
 			expectedStatus: http.StatusOK,
 			expectedBody:   "Ring Stream Usage Cache",
 		},
 		{
-			name:   "GET with populated cache",
-			method: http.MethodGet,
+			name: "GET with populated cache",
 			initialCache: map[string]*PartitionConsumersCacheEntry{
 				"instance1:8080": {
 					partitions: []int32{1, 2, 3},
@@ -151,9 +147,56 @@ func TestRingStreamUsageGatherer_ServeHTTP(t *testing.T) {
 			expectedStatus: http.StatusOK,
 			expectedBody:   "instance1:8080",
 		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ttl := time.Hour
+			// Create a new cache with test data
+			cache := NewPartitionConsumerCache(ttl)
+			for k, v := range tt.initialCache {
+				cache.Set(k, v, ttl)
+			}
+
+			// Create the gatherer with our test cache
+			gatherer := &RingStreamUsageGatherer{
+				cache: cache,
+			}
+
+			f := Frontend{
+				cfg: Config{
+					PartitionIDCacheTTL: ttl,
+				},
+				streamUsage: gatherer,
+			}
+
+			// Create request
+			req := httptest.NewRequest(http.MethodGet, "/ring-usage", nil)
+
+			// Create response recorder
+			w := httptest.NewRecorder()
+
+			// Call the handler
+			f.PartitionConsumersCacheHandler(w, req)
+
+			// Check status code
+			require.Equal(t, tt.expectedStatus, w.Code)
+			require.Contains(t, w.Body.String(), tt.expectedBody)
+		})
+	}
+}
+
+func TestRingStreamUsageGatherer_PartitionConsumerCacheEvictHandler(t *testing.T) {
+	tests := []struct {
+		name           string
+		formData       map[string]string
+		initialCache   map[string]*PartitionConsumersCacheEntry
+		expectedCache  map[string]*PartitionConsumersCacheEntry
+		expectedStatus int
+		expectedBody   string
+	}{
 		{
-			name:   "POST clear specific instance",
-			method: http.MethodPost,
+			name: "POST clear specific instance",
 			formData: map[string]string{
 				"instance": "instance1:8080",
 			},
@@ -191,8 +234,7 @@ func TestRingStreamUsageGatherer_ServeHTTP(t *testing.T) {
 			expectedStatus: http.StatusSeeOther,
 		},
 		{
-			name:   "POST clear all cache",
-			method: http.MethodPost,
+			name: "POST clear all cache",
 			initialCache: map[string]*PartitionConsumersCacheEntry{
 				"instance1:8080": {
 					partitions: []int32{1, 2, 3},
@@ -216,22 +258,15 @@ func TestRingStreamUsageGatherer_ServeHTTP(t *testing.T) {
 			expectedCache:  map[string]*PartitionConsumersCacheEntry{},
 			expectedStatus: http.StatusSeeOther,
 		},
-		{
-			name:           "Invalid method",
-			method:         http.MethodPut,
-			expectedStatus: http.StatusMethodNotAllowed,
-		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			ttl := time.Hour
 			// Create a new cache with test data
-			cache := &PartitionConsumersCache{
-				entries: make(map[string]*PartitionConsumersCacheEntry),
-				ttl:     time.Hour,
-			}
+			cache := NewPartitionConsumerCache(ttl)
 			for k, v := range tt.initialCache {
-				cache.entries[k] = v
+				cache.Set(k, v, ttl)
 			}
 
 			// Create the gatherer with our test cache
@@ -239,8 +274,15 @@ func TestRingStreamUsageGatherer_ServeHTTP(t *testing.T) {
 				cache: cache,
 			}
 
+			f := Frontend{
+				cfg: Config{
+					PartitionIDCacheTTL: ttl,
+				},
+				streamUsage: gatherer,
+			}
+
 			// Create request
-			req := httptest.NewRequest(tt.method, "/ring-usage", nil)
+			req := httptest.NewRequest(http.MethodPost, "/ring-usage", nil)
 			if tt.formData != nil {
 				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 				form := make(map[string][]string)
@@ -255,23 +297,14 @@ func TestRingStreamUsageGatherer_ServeHTTP(t *testing.T) {
 			w := httptest.NewRecorder()
 
 			// Call the handler
-			gatherer.ServeHTTP(w, req)
+			f.PartitionConsumersCacheEvictHandler(w, req)
 
 			// Check status code
 			require.Equal(t, tt.expectedStatus, w.Code)
 
-			// For GET requests, check if the response contains expected content
-			if tt.method == http.MethodGet {
-				require.Contains(t, w.Body.String(), tt.expectedBody)
-			}
-
-			// For POST requests, verify cache state
-			if tt.method == http.MethodPost {
-				require.Equal(t, len(tt.expectedCache), len(cache.entries))
-				for k := range tt.expectedCache {
-					_, exists := cache.entries[k]
-					require.True(t, exists)
-				}
+			require.Equal(t, len(tt.expectedCache), cache.Len())
+			for key := range tt.expectedCache {
+				require.NotNil(t, cache.Get(key))
 			}
 		})
 	}
