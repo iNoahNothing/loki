@@ -244,10 +244,6 @@ func (f *Frontend) ExceedsLimits(ctx context.Context, req *logproto.ExceedsLimit
 	}, nil
 }
 
-func (f *Frontend) GetStreamUsageGatherer() *RingStreamUsageGatherer {
-	return f.streamUsage.(*RingStreamUsageGatherer)
-}
-
 func (f *Frontend) CheckReady(ctx context.Context) error {
 	if f.State() != services.Running && f.State() != services.Stopping {
 		return fmt.Errorf("ingest limits frontend not ready: %v", f.State())

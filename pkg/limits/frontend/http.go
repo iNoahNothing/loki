@@ -2,7 +2,6 @@ package frontend
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"text/template"
 
@@ -11,7 +10,6 @@ import (
 
 	"github.com/grafana/loki/v3/pkg/logproto"
 	"github.com/grafana/loki/v3/pkg/util"
-	util_log "github.com/grafana/loki/v3/pkg/util/log"
 )
 
 const ringStreamUsageTemplate = `
@@ -108,25 +106,6 @@ func (f *Frontend) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *RingStreamUsageGatherer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		// For GET requests, display the HTML page
-		data := struct {
-			Entries map[string][]int32
-		}{
-			Entries: make(map[string][]int32),
-		}
-
-		for addr, entry := range s.cache.GetAll() {
-			data.Entries[addr] = entry.partitions
-		}
-
-		level.Info(util_log.Logger).Log("msg", "ring stream usage", "entries", fmt.Sprintf("%+v", data))
-
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		tmpl := template.Must(template.New("cache").Parse(ringStreamUsageTemplate))
-		if err := tmpl.Execute(w, data); err != nil {
-			http.Error(w, "Failed to render template", http.StatusInternalServerError)
-			return
-		}
 
 	case http.MethodPost:
 		// For POST requests, handle cache clearing
@@ -150,4 +129,48 @@ func (s *RingStreamUsageGatherer) ServeHTTP(w http.ResponseWriter, r *http.Reque
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// PartitionConsumerCacheHandler handles the GET request to display the cache.
+func (f *Frontend) PartitionConsumerCacheHandler(w http.ResponseWriter, r *http.Request) {
+	data := struct {
+		Entries map[string][]int32
+	}{
+		Entries: make(map[string][]int32),
+	}
+
+	cache := f.streamUsage.(*RingStreamUsageGatherer).cache
+
+	for addr, entry := range cache.GetAll() {
+		data.Entries[addr] = entry.partitions
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	tmpl := template.Must(template.New("cache").Parse(ringStreamUsageTemplate))
+	if err := tmpl.Execute(w, data); err != nil {
+		http.Error(w, "Failed to render template", http.StatusInternalServerError)
+		return
+	}
+}
+
+// PartitionConsumerCacheEvictHandler handles the POST request to clear the cache.
+func (f *Frontend) PartitionConsumerCacheEvictHandler(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "Failed to parse form", http.StatusBadRequest)
+		return
+	}
+
+	cache := f.streamUsage.(*RingStreamUsageGatherer).cache
+
+	instance := r.FormValue("instance")
+	if instance == "" {
+		// Clear all cache
+		cache.DeleteAll()
+	} else {
+		// Clear specific instance
+		cache.Delete(instance)
+	}
+
+	// Redirect back to the GET page
+	http.Redirect(w, r, r.URL.Path, http.StatusSeeOther)
 }
