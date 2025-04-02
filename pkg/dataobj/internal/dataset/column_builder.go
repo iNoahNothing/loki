@@ -181,6 +181,7 @@ func (cb *ColumnBuilder) Flush() (*MemColumn, error) {
 	}
 
 	for _, page := range cb.pages {
+		info.PagesCount++
 		info.RowsCount += page.Info.RowCount
 		info.ValuesCount += page.Info.ValuesCount
 		info.CompressedSize += page.Info.CompressedSize

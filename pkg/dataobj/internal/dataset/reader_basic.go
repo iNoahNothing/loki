@@ -367,3 +367,14 @@ func (pr *basicReader) Close() error {
 	}
 	return nil
 }
+
+func (pr *basicReader) PageAccess() []int64 {
+	var counts []int64
+	for _, r := range pr.readers {
+		if r != nil {
+			counts = append(counts, r.PageAccess())
+		}
+	}
+
+	return counts
+}

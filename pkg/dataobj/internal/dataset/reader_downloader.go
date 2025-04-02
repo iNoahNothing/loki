@@ -92,6 +92,9 @@ type readerDownloader struct {
 
 	readRange rowRange  // Current range being read.
 	rangeMask rowRanges // Inverse of dsetRanges: ranges to _exclude_ from download.
+
+	// download stats
+	stats DownloadStats
 }
 
 // newReaderDataset creates a new readerDataset wrapping around an inner
@@ -179,7 +182,12 @@ func (dl *readerDownloader) PrimaryColumns() []Column { return dl.primary }
 // readerDownloader in the order they were added.
 func (dl *readerDownloader) SecondaryColumns() []Column { return dl.secondary }
 
-// downloadBatch downloads a batch of pages from the inner dataset.
+// DownloadStats returns the number of pages downloaded for primary and secondary columns
+func (d *readerDownloader) DownloadStats() DownloadStats {
+	return d.stats
+}
+
+// downloadBatch downloads the requested pages for the given columns.
 func (dl *readerDownloader) downloadBatch(ctx context.Context, requestor *readerPage) error {
 	for _, col := range dl.allColumns {
 		// Garbage collect any unused pages; this prevents them from being included
@@ -191,6 +199,19 @@ func (dl *readerDownloader) downloadBatch(ctx context.Context, requestor *reader
 	batch, err := dl.buildDownloadBatch(ctx, requestor)
 	if err != nil {
 		return err
+	}
+
+	// Count downloads by column type
+	for _, page := range batch {
+		if page.column.primary {
+			dl.stats.PrimaryColumnPages++
+			dl.stats.PrimaryColumnBytes += uint64(page.column.inner.ColumnInfo().CompressedSize)
+			dl.stats.PrimaryColumnUncompressedBytes += uint64(page.column.inner.ColumnInfo().UncompressedSize)
+		} else {
+			dl.stats.SecondaryColumnPages++
+			dl.stats.SecondaryColumnBytes += uint64(page.column.inner.ColumnInfo().CompressedSize)
+			dl.stats.SecondaryColumnUncompressedBytes += uint64(page.column.inner.ColumnInfo().UncompressedSize)
+		}
 	}
 
 	// Build the set of inner pages that will be passed to the inner Dataset for
@@ -439,6 +460,10 @@ func (dl *readerDownloader) Reset(dset Dataset, targetCacheSize int) {
 	// dl.dsetRanges isn't owned by the downloader, so we don't use
 	// sliceclear.Clear.
 	dl.dsetRanges = nil
+
+	// Reset download statistics
+	dl.stats.PrimaryColumnPages = 0
+	dl.stats.SecondaryColumnPages = 0
 }
 
 type readerColumn struct {

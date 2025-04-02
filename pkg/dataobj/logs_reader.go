@@ -136,6 +136,14 @@ func (r *LogsReader) Read(ctx context.Context, s []Record) (int, error) {
 	return n, nil
 }
 
+func (r *LogsReader) Stats() *dataset.ReadStats {
+	if r.reader == nil {
+		return nil
+	}
+
+	return r.reader.Stats()
+}
+
 func (r *LogsReader) initReader(ctx context.Context) error {
 	dec := r.obj.dec.LogsDecoder()
 	sec, err := r.findSection(ctx)

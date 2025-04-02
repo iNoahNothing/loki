@@ -17,7 +17,8 @@ type columnReader struct {
 	pages     []Page
 	pageIndex int // Current index into pages.
 
-	ranges []rowRange // Ranges of each page.
+	ranges     []rowRange // Ranges of each page.
+	pageAccess []int64    // Number of times each page has been accessed.
 
 	reader *pageReader
 
@@ -52,6 +53,8 @@ func (cr *columnReader) Read(ctx context.Context, v []Value) (n int, err error) 
 			if err != nil {
 				return n, err
 			}
+
+			cr.pageAccess[pageIndex]++
 
 			switch cr.reader {
 			case nil:
@@ -128,6 +131,8 @@ func (cr *columnReader) init(ctx context.Context) error {
 		startRow = endRow + 1
 	}
 
+	cr.pageAccess = make([]int64, len(cr.ranges))
+
 	cr.initialized = true
 	return nil
 }
@@ -186,6 +191,7 @@ func (cr *columnReader) Reset(column Column) {
 	cr.pageIndex = -1
 
 	cr.ranges = sliceclear.Clear(cr.ranges)
+	cr.pageAccess = sliceclear.Clear(cr.pageAccess)
 
 	if cr.reader != nil {
 		// Resetting takes the place of calling Close here.
@@ -202,4 +208,16 @@ func (cr *columnReader) Close() error {
 		return cr.reader.Close()
 	}
 	return nil
+}
+
+func (cr *columnReader) PageAccess() int64 {
+	var count int64
+	for _, access := range cr.pageAccess {
+		if access > 0 {
+			count++
+		}
+
+	}
+
+	return count
 }

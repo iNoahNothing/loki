@@ -50,6 +50,11 @@ type Reader struct {
 	row    int64             // The current row being read.
 	inner  *basicReader      // Underlying reader that reads from columns.
 	ranges rowRanges         // Valid ranges to read across the entire dataset.
+
+	primaryColumns       map[Column]int      // Columns used in the predicate.
+	primaryColumnsPruned map[Column]struct{} // Columns pruned by the predicate.
+
+	stats ReadStats // Statistics about the reading operation
 }
 
 // NewReader creates a new Reader from the provided options.
@@ -142,6 +147,9 @@ func (r *Reader) Read(ctx context.Context, s []Row) (n int, err error) {
 		s[passCount], s[i] = s[i], s[passCount]
 		passCount++
 	}
+
+	r.stats.PrimaryRowReads += uint64(count)
+	r.stats.SecondaryRowReads += uint64(passCount)
 
 	if secondary := r.dl.SecondaryColumns(); len(secondary) > 0 && passCount > 0 {
 		// Mask out any ranges that aren't in s[:passCount], so that filling in
@@ -321,6 +329,7 @@ func (r *Reader) Reset(opts ReaderOptions) {
 
 	r.row = 0
 	r.ranges = sliceclear.Clear(r.ranges)
+	r.stats = ReadStats{}
 	r.ready = false
 }
 
@@ -391,12 +400,6 @@ func (r *Reader) validatePredicate() error {
 }
 
 func (r *Reader) initDownloader(ctx context.Context) error {
-	// The downloader is initialized in three steps:
-	//
-	//   1. Give it the inner dataset.
-	//   2. Add columns with a flag of whether a column is primary or secondary.
-	//   3. Provide the overall dataset row ranges that will be valid to read.
-
 	if r.dl == nil {
 		r.dl = newReaderDownloader(r.opts.Dataset, r.opts.TargetCacheSize)
 	} else {
@@ -406,8 +409,19 @@ func (r *Reader) initDownloader(ctx context.Context) error {
 	mask := bitmask.New(len(r.opts.Columns))
 	r.fillPrimaryMask(mask)
 
+	var maxRows uint64
 	for i, column := range r.opts.Columns {
-		r.dl.AddColumn(column, mask.Test(i))
+		primary := mask.Test(i)
+		if primary {
+			r.stats.PrimaryColumns++
+			r.stats.PrimaryColumnPages += uint64(column.ColumnInfo().PagesCount)
+			maxRows = max(maxRows, uint64(column.ColumnInfo().RowsCount))
+		} else {
+			r.stats.SecondaryColumns++
+			r.stats.SecondaryColumnPages += uint64(column.ColumnInfo().PagesCount)
+		}
+
+		r.dl.AddColumn(column, primary)
 	}
 
 	ranges, err := r.buildPredicateRanges(ctx, r.opts.Predicate)
@@ -416,6 +430,9 @@ func (r *Reader) initDownloader(ctx context.Context) error {
 	}
 	r.dl.SetDatasetRanges(ranges)
 	r.ranges = ranges
+
+	r.stats.MaxRows = maxRows
+	r.stats.PredicateRowRangeTotal = ranges.TotalRows()
 
 	return nil
 }
@@ -695,4 +712,15 @@ func readMinMax(stats *datasetmd.Statistics) (minValue Value, maxValue Value, er
 		return Value{}, Value{}, fmt.Errorf("failed to unmarshal max value: %w", err)
 	}
 	return
+}
+
+// GetReadStats returns the statistics collected during reading operations.
+func (r *Reader) Stats() *ReadStats {
+	r.stats.DownloadStats = r.dl.DownloadStats()
+
+	for _, v := range r.inner.PageAccess() {
+		r.stats.TotalPagesRead += uint64(v)
+	}
+
+	return &r.stats
 }
