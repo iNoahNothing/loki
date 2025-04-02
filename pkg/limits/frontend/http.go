@@ -104,7 +104,7 @@ func (f *Frontend) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // PartitionConsumersCacheHandler handles the GET request to display the cache.
-func (f *Frontend) PartitionConsumersCacheHandler(w http.ResponseWriter, r *http.Request) {
+func (f *Frontend) PartitionConsumersCacheHandler(w http.ResponseWriter, _ *http.Request) {
 	data := struct {
 		Entries map[string][]int32
 	}{
